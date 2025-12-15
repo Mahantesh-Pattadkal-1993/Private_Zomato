@@ -7,7 +7,21 @@ def setup_database():
     conn = sqlite3.connect(DATABASE_NAME)
     c = conn.cursor()
     
-    # Create the table with all necessary columns including new fields
+    # Create the users table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Insert default users
+    default_users = ['Mahantesh', 'Shweta', 'Manjusha', 'Anish', 'Raj']
+    for user in default_users:
+        c.execute('INSERT OR IGNORE INTO users (name) VALUES (?)', (user,))
+    
+    # Create the restaurants table
     c.execute('''
         CREATE TABLE IF NOT EXISTS restaurants (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -15,14 +29,28 @@ def setup_database():
             cuisines TEXT,
             area TEXT,
             google_map_link TEXT,
-            comments TEXT,
             added_by TEXT,
-            restaurant_picture BLOB
+            restaurant_picture BLOB,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    
+    # Create the reviews table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            restaurant_id INTEGER NOT NULL,
+            reviewer_name TEXT NOT NULL,
+            rating INTEGER CHECK(rating >= 1 AND rating <= 5),
+            comment TEXT,
+            review_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (restaurant_id) REFERENCES restaurants (id) ON DELETE CASCADE
+        )
+    ''')
+    
     conn.commit()
     conn.close()
-    print(f"Database '{DATABASE_NAME}' and table 'restaurants' ready.")
+    print(f"Database '{DATABASE_NAME}' and tables ready.")
 
 if __name__ == "__main__":
     setup_database()

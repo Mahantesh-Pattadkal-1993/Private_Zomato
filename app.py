@@ -4,95 +4,27 @@ import pandas as pd
 from pathlib import Path
 from io import BytesIO
 from PIL import Image
+from datetime import datetime
 
-DATABASE_NAME = "food_tracker.db"
+from src.utils.db_utils import (
+    add_restaurant,     
+    add_review,
+    get_reviews_for_restaurant,
+    fetch_all_restaurants,
+    search_restaurants,
+    delete_restaurant,
+    get_all_users,
+    add_user,
+    delete_user,
+    get_user_count
+)
 
-# --- Database Functions ---
+from src.utils.ui_utils import (
+    image_to_bytes,
+    bytes_to_image,
+    display_star_rating
+)
 
-def connect_db():
-    """Connects to the SQLite database."""
-    return sqlite3.connect(DATABASE_NAME)
-
-def add_restaurant(title, cuisines, area, google_map_link, comments, added_by, picture_bytes):
-    """Inserts a new restaurant record into the database."""
-    conn = connect_db()
-    c = conn.cursor()
-    try:
-        c.execute('''
-            INSERT INTO restaurants (title, cuisines, area, google_map_link, comments, added_by, restaurant_picture) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (title, cuisines, area, google_map_link, comments, added_by, picture_bytes))
-        conn.commit()
-        return True
-    except Exception as e:
-        st.error(f"Error adding restaurant: {e}")
-        return False
-    finally:
-        conn.close()
-
-def fetch_all_restaurants():
-    """Fetches all restaurant records."""
-    conn = connect_db()
-    query = "SELECT title, cuisines, area, google_map_link, comments, added_by, restaurant_picture FROM restaurants"
-    df = pd.read_sql(query, conn)
-    conn.close()
-    return df
-
-def search_restaurants(area, cuisine):
-    """Searches the database based on the selected area and cuisine."""
-    conn = connect_db()
-    
-    # Build the WHERE clause dynamically
-    conditions = []
-    params = []
-    
-    # Use LIKE for partial/case-insensitive matching
-    if area:
-        conditions.append("area LIKE ?")
-        params.append(f"%{area}%")
-        
-    if cuisine:
-        conditions.append("cuisines LIKE ?")
-        params.append(f"%{cuisine}%")
-        
-    where_clause = " AND ".join(conditions)
-    
-    if where_clause:
-        query = f"SELECT title, cuisines, area, google_map_link, comments, added_by, restaurant_picture FROM restaurants WHERE {where_clause}"
-    else:
-        query = "SELECT title, cuisines, area, google_map_link, comments, added_by, restaurant_picture FROM restaurants"
-        
-    df = pd.read_sql(query, conn, params=params)
-    conn.close()
-    return df
-
-def delete_restaurant(title):
-    """Deletes a restaurant record from the database."""
-    conn = connect_db()
-    c = conn.cursor()
-    try:
-        c.execute('''
-            DELETE FROM restaurants WHERE title = ?
-        ''', (title,))
-        conn.commit()
-        return True
-    except Exception as e:
-        st.error(f"Error deleting restaurant: {e}")
-        return False
-    finally:
-        conn.close()
-
-def image_to_bytes(image_file):
-    """Convert uploaded image to bytes."""
-    if image_file is not None:
-        return image_file.read()
-    return None
-
-def bytes_to_image(image_bytes):
-    """Convert bytes to PIL Image."""
-    if image_bytes:
-        return Image.open(BytesIO(image_bytes))
-    return None
 
 # --- Streamlit UI ---
 
@@ -121,18 +53,24 @@ st.markdown("""
         background-color: #FF6B6B;
         border-color: #FF6B6B;
     }
-    .restaurant-card {
+    .review-box {
         background-color: #f0f2f6;
-        padding: 20px;
+        padding: 15px;
         border-radius: 10px;
-        margin-bottom: 20px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        margin-bottom: 10px;
+        color: #262730;
     }
-    .stSelectbox, .stMultiSelect, .stTextInput, .stTextArea {
-        border-radius: 10px;
+    .review-box strong {
+        color: #262730;
+        font-size: 16px;
     }
-    div[data-testid="stSidebarNav"] {
-        padding-top: 2rem;
+    .review-box p {
+        color: #262730;
+        margin-top: 10px;
+        margin-bottom: 0;
+    }
+    .review-box small {
+        color: #6c757d;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -152,7 +90,7 @@ with st.sidebar:
     st.markdown("---")
     
     # Get the index of current page for radio button
-    pages = ["🏠 Home", "➕ Add Restaurant", "🔍 Search & View", "📊 Manage Data"]
+    pages = ["🏠 Home", "➕ Add Restaurant", "🔍 Search & View", "📊 Manage Data", "👥 Manage Users"]
     current_index = pages.index(st.session_state.current_page)
     
     selected_page = st.radio(
@@ -174,7 +112,8 @@ with st.sidebar:
     st.metric("Total Restaurants", len(df_all))
     if not df_all.empty:
         st.metric("Total Areas", df_all['area'].nunique())
-        st.metric("Total Cuisines", len(df_all['cuisines'].str.split(', ').explode().unique()))
+        st.metric("Total Reviews", int(df_all['review_count'].sum()))
+    st.metric("Total Users", get_user_count())
 
 # Use the current page from session state
 page = st.session_state.current_page
@@ -206,7 +145,7 @@ if page == "🏠 Home":
     # Recent additions
     if not df_all.empty:
         st.subheader("📍 Recently Added Restaurants")
-        recent = df_all.tail(3)
+        recent = df_all.head(3)
         
         cols = st.columns(3)
         for idx, (i, row) in enumerate(recent.iterrows()):
@@ -220,6 +159,8 @@ if page == "🏠 Home":
                     
                     st.markdown(f"**{row['title']}**")
                     st.caption(f"📍 {row['area']} | 🍴 {row['cuisines']}")
+                    if row['avg_rating'] > 0:
+                        st.caption(display_star_rating(row['avg_rating']))
     else:
         st.info("No restaurants added yet. Start by adding your first favorite place!")
 
@@ -228,56 +169,79 @@ elif page == "➕ Add Restaurant":
     st.title("➕ Add a New Favorite Place")
     st.markdown("Fill in the details below to save a new restaurant")
     
-    with st.form("add_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            title = st.text_input("🏪 Restaurant Name *", placeholder="Enter restaurant name")
+    # Get users dynamically
+    users = get_all_users()
+    
+    if not users:
+        st.warning("⚠️ No users found! Please add users in the 'Manage Users' section first.")
+    else:
+        with st.form("add_form", clear_on_submit=True):
+            col1, col2 = st.columns(2)
             
-            cuisines = st.multiselect(
-                "🍜 Cuisines *", 
-                options=['Indian', 'Italian', 'Chinese', 'Japanese', 'Mexican', 'Continental', 'South Indian', 'Thai', 'Korean', 'Other'],
-            )
-            
-            area = st.text_input("📍 Area / Locality *", placeholder="e.g., Whitefield, Koramangala")
-        
-        with col2:
-            google_map_link = st.text_input("🗺️ Google Map Link *", placeholder="Paste Google Maps link here")
-            
-            added_by = st.selectbox(
-                "👤 Added By *", 
-                options=['Mahantesh', 'Shweta', 'Manjusha', 'Anish', 'Raj'],
-            )
-            
-            restaurant_picture = st.file_uploader("📸 Upload Restaurant Picture", type=['jpg', 'jpeg', 'png'])
-        
-        comments = st.text_area("💭 Comments / Review", placeholder="Share your experience...", height=100)
-        
-        st.markdown("---")
-        submitted = st.form_submit_button("💾 Save Restaurant", use_container_width=True)
-        
-        if submitted:
-            if title and area and google_map_link and cuisines:
-                cuisine_str = ", ".join(cuisines)
-                picture_bytes = image_to_bytes(restaurant_picture) if restaurant_picture else None
+            with col1:
+                title = st.text_input("🏪 Restaurant Name *", placeholder="Enter restaurant name")
                 
-                if add_restaurant(title, cuisine_str, area, google_map_link, comments, added_by, picture_bytes):
-                    st.success(f"✅ Successfully added **{title}** to your tracker!")
-                    st.balloons()
-            else:
-                st.error("⚠️ Please fill out all required fields (marked with *)")
+                cuisines = st.multiselect(
+                    "🍜 Cuisines *", 
+                    options=['Indian','Arabic' ,'Italian', 'Chinese', 'Japanese', 'Mexican', 'Continental', 'South Indian', 'Thai', 'Korean', 'Other'],
+                )
+                
+                area = st.text_input("📍 Area / Locality *", placeholder="e.g., Whitefield, Koramangala")
+            
+            with col2:
+                google_map_link = st.text_input("🗺️ Google Map Link *", placeholder="Paste Google Maps link here")
+                
+                added_by = st.selectbox(
+                    "👤 Added By *", 
+                    options=users,
+                )
+                
+                restaurant_picture = st.file_uploader("📸 Upload Restaurant Picture", type=['jpg', 'jpeg', 'png'])
+            
+            st.markdown("### 📝 Add Your First Review")
+            
+            col3, col4 = st.columns(2)
+            with col3:
+                rating = st.slider("⭐ Rating", 1, 5, 3)
+            with col4:
+                st.write("")  # Spacing
+            
+            comments = st.text_area("💭 Your Review", placeholder="Share your experience...", height=100)
+            
+            st.markdown("---")
+            submitted = st.form_submit_button("💾 Save Restaurant", use_container_width=True)
+            
+            if submitted:
+                if title and area and google_map_link and cuisines:
+                    cuisine_str = ", ".join(cuisines)
+                    picture_bytes = image_to_bytes(restaurant_picture) if restaurant_picture else None
+                    
+                    restaurant_id = add_restaurant(title, cuisine_str, area, google_map_link, added_by, picture_bytes)
+                    
+                    if restaurant_id:
+                        # Add the first review
+                        if comments:
+                            add_review(restaurant_id, added_by, rating, comments)
+                        
+                        st.success(f"✅ Successfully added **{title}** to your tracker!")
+                        st.balloons()
+                else:
+                    st.error("⚠️ Please fill out all required fields (marked with *)")
 
 # --- Search & View Page ---
 elif page == "🔍 Search & View":
     st.title("🔍 Find Your Next Meal")
+    
+    # Get users dynamically
+    users = get_all_users()
     
     # Search filters
     with st.container():
         col1, col2, col3 = st.columns([2, 2, 1])
         
         df_all = fetch_all_restaurants()
-        all_areas = ['All Areas'] + sorted(df_all['area'].unique().tolist())
-        all_cuisines_raw = ['All Cuisines'] + sorted(df_all['cuisines'].str.split(', ').explode().str.strip().unique().tolist())
+        all_areas = ['All Areas'] + sorted(df_all['area'].unique().tolist()) if not df_all.empty else ['All Areas']
+        all_cuisines_raw = ['All Cuisines'] + sorted(df_all['cuisines'].str.split(', ').explode().str.strip().unique().tolist()) if not df_all.empty else ['All Cuisines']
         
         with col1:
             selected_area = st.selectbox("📍 Filter by Area", options=all_areas)
@@ -292,47 +256,97 @@ elif page == "🔍 Search & View":
     st.markdown("---")
     
     # Auto-search on page load or when button clicked
-    if search_clicked or True:
-        area_filter = None if selected_area == 'All Areas' else selected_area
-        cuisine_filter = None if selected_cuisine == 'All Cuisines' else selected_cuisine
+    area_filter = None if selected_area == 'All Areas' else selected_area
+    cuisine_filter = None if selected_cuisine == 'All Cuisines' else selected_cuisine
+    
+    df_results = search_restaurants(area_filter, cuisine_filter)
+    
+    if df_results.empty:
+        st.info("🔍 No restaurants found matching your criteria. Try different filters!")
+    else:
+        st.success(f"✨ Found **{len(df_results)}** restaurant(s)!")
         
-        df_results = search_restaurants(area_filter, cuisine_filter)
-        
-        if df_results.empty:
-            st.info("🔍 No restaurants found matching your criteria. Try different filters!")
-        else:
-            st.success(f"✨ Found **{len(df_results)}** restaurant(s)!")
-            
-            # Display results in a grid
-            for idx, row in df_results.iterrows():
-                with st.container():
-                    col1, col2 = st.columns([1, 2])
+        # Display results in a grid
+        for idx, row in df_results.iterrows():
+            with st.container():
+                col1, col2 = st.columns([1, 2])
+                
+                with col1:
+                    if row['restaurant_picture']:
+                        img = bytes_to_image(row['restaurant_picture'])
+                        st.image(img, use_container_width=True)
+                    else:
+                        st.image("https://via.placeholder.com/400x300?text=No+Image", use_container_width=True)
+                
+                with col2:
+                    st.markdown(f"### 🍽️ {row['title']}")
                     
-                    with col1:
-                        if row['restaurant_picture']:
-                            img = bytes_to_image(row['restaurant_picture'])
-                            st.image(img, use_container_width=True)
-                        else:
-                            st.image("https://via.placeholder.com/400x300?text=No+Image", use_container_width=True)
+                    # Display average rating
+                    if row['avg_rating'] > 0:
+                        st.markdown(display_star_rating(row['avg_rating']) + f" ({int(row['review_count'])} reviews)")
+                    else:
+                        st.markdown("⭐ No reviews yet")
                     
-                    with col2:
-                        st.markdown(f"### 🍽️ {row['title']}")
-                        
-                        col_a, col_b = st.columns(2)
-                        with col_a:
-                            st.markdown(f"**🍜 Cuisines:** {row['cuisines']}")
-                            st.markdown(f"**📍 Area:** {row['area']}")
-                        with col_b:
-                            if row['added_by']:
-                                st.markdown(f"**👤 Added by:** {row['added_by']}")
-                        
-                        if row['comments']:
-                            st.markdown(f"**💭 Review:**")
-                            st.info(row['comments'])
-                        
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        st.markdown(f"**🍜 Cuisines:** {row['cuisines']}")
+                        st.markdown(f"**📍 Area:** {row['area']}")
+                    with col_b:
+                        if row['added_by']:
+                            st.markdown(f"**👤 Added by:** {row['added_by']}")
+                    
+                    # Action buttons
+                    btn_col1, btn_col2 = st.columns(2)
+                    with btn_col1:
                         st.markdown(f"[🗺️ View on Google Maps]({row['google_map_link']})")
+                    with btn_col2:
+                        if st.button("✏️ Add Review", key=f"review_btn_{row['id']}", type="secondary"):
+                            st.session_state[f'show_review_form_{row["id"]}'] = True
                     
-                    st.markdown("---")
+                    # Show review form if button clicked
+                    if st.session_state.get(f'show_review_form_{row["id"]}', False):
+                        if not users:
+                            st.warning("⚠️ No users available. Please add users in 'Manage Users' section.")
+                        else:
+                            with st.form(key=f"review_form_{row['id']}"):
+                                st.markdown("#### Add Your Review")
+                                
+                                review_col1, review_col2 = st.columns(2)
+                                with review_col1:
+                                    reviewer_name = st.selectbox(
+                                        "Your Name",
+                                        options=users,
+                                        key=f"reviewer_{row['id']}"
+                                    )
+                                with review_col2:
+                                    rating = st.slider("Rating", 1, 5, 3, key=f"rating_{row['id']}")
+                                
+                                comment = st.text_area("Your Review", placeholder="Share your experience...", key=f"comment_{row['id']}")
+                                
+                                submit_review = st.form_submit_button("Submit Review")
+                                
+                                if submit_review:
+                                    if add_review(row['id'], reviewer_name, rating, comment):
+                                        st.success("✅ Review added successfully!")
+                                        st.session_state[f'show_review_form_{row["id"]}'] = False
+                                        st.rerun()
+                    
+                    # Display existing reviews
+                    reviews_df = get_reviews_for_restaurant(row['id'])
+                    
+                    if not reviews_df.empty:
+                        with st.expander(f"📝 View All Reviews ({len(reviews_df)})"):
+                            for _, review in reviews_df.iterrows():
+                                review_date = pd.to_datetime(review['review_date']).strftime('%d %B %Y')
+                                st.markdown(f"""
+                                <div class="review-box">
+                                    <strong>{review['reviewer_name']}</strong> {display_star_rating(review['rating'])}<br>
+                                    <small style="color: gray;">📅 {review_date}</small><br>
+                                    <p style="margin-top: 10px;">{review['comment']}</p>
+                                </div>
+                                """, unsafe_allow_html=True)
+                
+                st.markdown("---")
 
 # --- Manage Data Page ---
 elif page == "📊 Manage Data":
@@ -360,12 +374,27 @@ elif page == "📊 Manage Data":
                 
                 with col2:
                     st.markdown(f"### {row['title']}")
+                    
+                    # Display average rating
+                    if row['avg_rating'] > 0:
+                        st.markdown(display_star_rating(row['avg_rating']) + f" ({int(row['review_count'])} reviews)")
+                    
                     st.markdown(f"**🍜 Cuisines:** {row['cuisines']}")
                     st.markdown(f"**📍 Area:** {row['area']}")
                     
-                    if row['comments']:
-                        with st.expander("💭 View Comments"):
-                            st.write(row['comments'])
+                    # Display reviews
+                    reviews_df = get_reviews_for_restaurant(row['id'])
+                    if not reviews_df.empty:
+                        with st.expander(f"💭 View Reviews ({len(reviews_df)})"):
+                            for _, review in reviews_df.iterrows():
+                                review_date = pd.to_datetime(review['review_date']).strftime('%d %B %Y')
+                                st.markdown(f"""
+                                <div class="review-box">
+                                    <strong>{review['reviewer_name']}</strong> {display_star_rating(review['rating'])}<br>
+                                    <small style="color: gray;">📅 {review_date}</small><br>
+                                    <p style="margin-top: 10px;">{review['comment']}</p>
+                                </div>
+                                """, unsafe_allow_html=True)
                     
                     if row['added_by']:
                         st.caption(f"👤 Added by: {row['added_by']}")
@@ -374,9 +403,55 @@ elif page == "📊 Manage Data":
                 
                 with col3:
                     st.markdown("<br><br>", unsafe_allow_html=True)
-                    if st.button("🗑️ Delete", key=f"delete_{idx}", help=f"Delete {row['title']}", type="secondary"):
-                        if delete_restaurant(row['title']):
+                    if st.button("🗑️ Delete", key=f"delete_{row['id']}", help=f"Delete {row['title']}", type="secondary"):
+                        if delete_restaurant(row['id']):
                             st.success(f"✅ Deleted **{row['title']}**!")
                             st.rerun()
                 
                 st.markdown("---")
+
+# --- Manage Users Page ---
+elif page == "👥 Manage Users":
+    st.title("👥 Manage Users")
+    st.markdown("Add or remove users who can add restaurants and reviews")
+    
+    # Add new user section
+    st.subheader("➕ Add New User")
+    with st.form("add_user_form"):
+        new_user_name = st.text_input("User Name", placeholder="Enter user name")
+        submit_user = st.form_submit_button("Add User")
+        
+        if submit_user:
+            if new_user_name and new_user_name.strip():
+                if add_user(new_user_name.strip()):
+                    st.success(f"✅ Successfully added user **{new_user_name}**!")
+                    st.rerun()
+            else:
+                st.error("⚠️ Please enter a valid user name")
+    
+    st.markdown("---")
+    
+    # Display existing users
+    st.subheader("📋 Current Users")
+    users = get_all_users()
+    
+    if not users:
+        st.info("No users found. Add your first user above!")
+    else:
+        st.success(f"Total Users: **{len(users)}**")
+        
+        # Display users in a grid
+        cols_per_row = 3
+        for i in range(0, len(users), cols_per_row):
+            cols = st.columns(cols_per_row)
+            for j, col in enumerate(cols):
+                if i + j < len(users):
+                    user = users[i + j]
+                    with col:
+                        with st.container():
+                            st.markdown(f"### 👤 {user}")
+                            if st.button("🗑️ Remove", key=f"delete_user_{user}", type="secondary", use_container_width=True):
+                                if delete_user(user):
+                                    st.success(f"✅ Removed user **{user}**!")
+                                    st.rerun()
+                            st.markdown("---")
