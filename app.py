@@ -6,7 +6,7 @@ from io import BytesIO
 from PIL import Image
 from datetime import datetime
 
-from src.utils.db_utils import (
+from src.utils.turso_db_utils import (
     add_restaurant,     
     add_review,
     get_reviews_for_restaurant,
