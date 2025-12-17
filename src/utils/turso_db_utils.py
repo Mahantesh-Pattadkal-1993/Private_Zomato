@@ -49,7 +49,7 @@ def connect_db():
 
 # --- Database Functions ---
 
-def add_restaurant(title, cuisines, area, google_map_link, added_by, picture_bytes):
+def add_restaurant(title, cuisines, area, google_map_link, added_by, picture_bytes, price_per_person):
     """Inserts a new restaurant record and reliably retrieves the new ID."""
     
     conn = connect_db() 
@@ -63,9 +63,9 @@ def add_restaurant(title, cuisines, area, google_map_link, added_by, picture_byt
     try:
         # 1. Execute the INSERT statement
         c.execute('''
-            INSERT INTO restaurants (title, cuisines, area, google_map_link, added_by, restaurant_picture) 
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (title, cuisines, area, google_map_link, added_by, picture_bytes))
+            INSERT INTO restaurants (title, cuisines, area, google_map_link, added_by, restaurant_picture, price_per_person) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (title, cuisines, area, google_map_link, added_by, picture_bytes, price_per_person))
         
         # 2. **CRITICAL FIX: Get the ID directly from the cursor**
         # The libsql driver should populate this after the execute() call.
@@ -133,7 +133,7 @@ def get_reviews_for_restaurant(restaurant_id):
     conn = connect_db()
     if not conn: return pd.DataFrame()
     query = """
-        SELECT reviewer_name, rating, comment, review_date 
+        SELECT id, reviewer_name, rating, comment, review_date 
         FROM reviews 
         WHERE restaurant_id = ? 
         ORDER BY review_date DESC
@@ -157,7 +157,7 @@ def fetch_all_restaurants():
     if not conn: return pd.DataFrame()
     query = """
         SELECT r.id, r.title, r.cuisines, r.area, r.google_map_link, 
-               r.added_by, r.restaurant_picture,
+               r.added_by, r.restaurant_picture,r.price_per_person,
                COALESCE(AVG(rev.rating), 0) as avg_rating,
                COUNT(rev.id) as review_count
         FROM restaurants r
@@ -165,6 +165,14 @@ def fetch_all_restaurants():
         GROUP BY r.id
         ORDER BY r.id DESC
     """
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        print("Connection is healthy")
+    except Exception as e:
+        print(f"Connection failed: {e}")
+        return None
+
     df = pd.read_sql(query, conn)
     return df
 
@@ -189,7 +197,7 @@ def search_restaurants(area, cuisine):
     
     base_query = """
         SELECT r.id, r.title, r.cuisines, r.area, r.google_map_link, 
-               r.added_by, r.restaurant_picture,
+               r.added_by, r.restaurant_picture, r.price_per_person,
                COALESCE(AVG(rev.rating), 0) as avg_rating,
                COUNT(rev.id) as review_count
         FROM restaurants r
@@ -227,6 +235,46 @@ def delete_restaurant(restaurant_id):
     finally:
         pass
 
+def update_restaurant(restaurant_id, title, cuisines, area, map_link, price_per_person, picture_bytes=None):
+    conn = connect_db()
+    if not conn:
+        st.error("Database connection failed.")
+        return False
+
+    # Ensure price_per_person is never None
+    price_per_person = price_per_person or 0
+
+    cursor = conn.cursor()
+    try:
+        if picture_bytes:
+            query = """
+                UPDATE restaurants
+                SET title=?, cuisines=?, area=?, google_map_link=?, price_per_person=?, restaurant_picture=?
+                WHERE id=?
+            """
+            cursor.execute(query, (title, cuisines, area, map_link, price_per_person, picture_bytes, restaurant_id))
+        else:
+            query = """
+                UPDATE restaurants
+                SET title=?, cuisines=?, area=?, google_map_link=?, price_per_person=?
+                WHERE id=?
+            """
+            cursor.execute(query, (title, cuisines, area, map_link, price_per_person, restaurant_id))
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"Error updating restaurant: {e}")
+        return False
+
+
+
+def update_review(review_id, rating, comment):
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE reviews SET rating=?, comment=? WHERE id=?", (rating, comment, review_id))
+    conn.commit()
+    #conn.close()
+
 
 ##------------------------------------------------
 # User Functions
@@ -250,8 +298,7 @@ def add_user(name):
     try:
         c.execute('INSERT INTO users (name) VALUES (?)', (name,))
         conn.commit()
-        # Clear the user list cache
-        get_all_users.clear() 
+
         return True
     except libsql.IntegrityError: # Use libsql's error handling
         st.error(f"User '{name}' already exists!")
@@ -270,8 +317,7 @@ def delete_user(name):
     try:
         c.execute('DELETE FROM users WHERE name = ?', (name,))
         conn.commit()
-        # Clear the user list cache
-        get_all_users.clear()
+
         return True
     except Exception as e:
         st.error(f"Error deleting user: {e}")

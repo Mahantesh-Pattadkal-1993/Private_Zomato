@@ -51,6 +51,7 @@ def setup_database_on_turso():
                 area TEXT,
                 google_map_link TEXT,
                 added_by TEXT,
+                price_per_person REAL,  -- <--- New Numerical Field Added
                 restaurant_picture BLOB,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
