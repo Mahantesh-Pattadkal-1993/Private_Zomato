@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "libsql>=0.1.11",
-    "psycopg2-binary",
+    "psycopg2-binary>=2.9.0",
     "streamlit>=1.52.1",
 ]
+
+[tool.pip]
+no-binary = ["psycopg2"]
