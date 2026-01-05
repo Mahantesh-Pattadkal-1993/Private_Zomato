@@ -6,9 +6,10 @@ from io import BytesIO
 from PIL import Image
 from datetime import datetime
 
-from src.utils.turso_db_utils import (
+
+from src.utils.postgres_db_utils import (
     add_restaurant,     
-    add_review,
+    add_review,     
     get_reviews_for_restaurant,
     fetch_all_restaurants,
     search_restaurants,
@@ -20,6 +21,8 @@ from src.utils.turso_db_utils import (
     update_review,
     update_restaurant,
 )
+
+
 
 from src.utils.ui_utils import (
     image_to_bytes,
